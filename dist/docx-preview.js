@@ -2797,7 +2797,28 @@
         container.removeChild(temp);
         return result;
     }
-    function updateTabStop(elem, tabs, defaultTabSize, pixelToPoint = 72 / 96) {
+    function updateTabStops(tabs, defaultTabSize, pixelToPoint = 72 / 96) {
+        const measured = tabs.map(t => measureTabStop(t.span, t.stops, defaultTabSize, pixelToPoint));
+        tabs.forEach((t, i) => measured[i] != null && applyTabStop(t.span, measured[i]));
+    }
+    function applyTabStop(elem, { width, leader }) {
+        elem.innerHTML = "&nbsp;";
+        elem.style.textDecoration = "inherit";
+        elem.style.wordSpacing = `${width.toFixed(0)}pt`;
+        switch (leader) {
+            case "dot":
+            case "middleDot":
+                elem.style.textDecoration = "underline";
+                elem.style.textDecorationStyle = "dotted";
+                break;
+            case "hyphen":
+            case "heavy":
+            case "underscore":
+                elem.style.textDecoration = "underline";
+                break;
+        }
+    }
+    function measureTabStop(elem, tabs, defaultTabSize, pixelToPoint) {
         const p = elem.closest("p");
         const ebb = elem.getBoundingClientRect();
         const pbb = p.getBoundingClientRect();
@@ -2821,7 +2842,7 @@
         const left = (ebb.left - pOffset) * pixelToPoint;
         const tab = tabStops.find(t => t.style != "clear" && t.pos > left);
         if (tab == null)
-            return;
+            return null;
         let width = 1;
         if (tab.style == "right" || tab.style == "center") {
             const tabStops = Array.from(p.querySelectorAll(`.${elem.className}`));
@@ -2842,21 +2863,7 @@
         else {
             width = tab.pos - left;
         }
-        elem.innerHTML = "&nbsp;";
-        elem.style.textDecoration = "inherit";
-        elem.style.wordSpacing = `${width.toFixed(0)}pt`;
-        switch (tab.leader) {
-            case "dot":
-            case "middleDot":
-                elem.style.textDecoration = "underline";
-                elem.style.textDecorationStyle = "dotted";
-                break;
-            case "hyphen":
-            case "heavy":
-            case "underscore":
-                elem.style.textDecoration = "underline";
-                break;
-        }
+        return { width: Math.min(width, pWidthPt - left), leader: tab.leader };
     }
     function lengthToPoint(length) {
         return parseFloat(length);
@@ -3330,14 +3337,9 @@ section.${c}>footer { z-index: 1; }
                 else if (num.levelText) {
                     let counter = this.numberingCounter(num.id, num.level);
                     const counterReset = counter + " " + (num.start - 1);
-                    if (num.level > 0) {
-                        styleText += this.styleToString(`p.${this.numberingClass(num.id, num.level - 1)}`, {
-                            "counter-set": counterReset
-                        });
-                    }
                     resetCounters.push(counterReset);
                     styleText += this.styleToString(`${selector}:before`, {
-                        "content": this.levelTextToContent(num.levelText, num.suff, num.id, this.numFormatToCssValue(num.format)),
+                        "content": this.levelTextToContent(num.levelText, num.suff, num.id, numberings),
                         "counter-increment": counter,
                         ...num.rStyle,
                     });
@@ -3345,10 +3347,14 @@ section.${c}>footer { z-index: 1; }
                 else {
                     listStyleType = this.numFormatToCssValue(num.format);
                 }
+                const deeper = numberings
+                    .filter(l => l.id == num.id && l.level > num.level && l.levelText)
+                    .map(l => `${this.numberingCounter(l.id, l.level)} ${l.start - 1}`);
                 styleText += this.styleToString(selector, {
                     "display": "list-item",
                     "list-style-position": "inside",
                     "list-style-type": listStyleType,
+                    ...(deeper.length ? { "counter-set": deeper.join(" ") } : {}),
                     ...num.pStyle
                 });
             }
@@ -3443,7 +3449,7 @@ section.${c}>footer { z-index: 1; }
                 case DomType.EndnoteReference:
                     return this.renderEndnoteReference(elem);
                 case DomType.NoBreakHyphen:
-                    return this.h({ tagName: "wbr" });
+                    return this.h("\u2011");
                 case DomType.VmlPicture:
                     return this.renderVmlPicture(elem);
                 case DomType.VmlElement:
@@ -3524,9 +3530,9 @@ section.${c}>footer { z-index: 1; }
             return this.h({ ns, tagName, children: this.renderElements(elem.children), ...props });
         }
         renderParagraph(elem) {
-            var result = this.toHTML(elem, ns.html, "p");
             const style = this.findStyle(elem.styleName);
             elem.tabs ?? (elem.tabs = style?.paragraphProps?.tabs);
+            var result = this.toHTML(elem, ns.html, "p");
             const numbering = elem.numbering ?? style?.paragraphProps?.numbering;
             if (numbering) {
                 result.classList.add(this.numberingClass(numbering.id, numbering.level));
@@ -3872,14 +3878,17 @@ section.${c}>footer { z-index: 1; }
         numberingCounter(id, lvl) {
             return `${this.className}-num-${id}-${lvl}`;
         }
-        levelTextToContent(text, suff, id, numformat) {
+        levelTextToContent(text, suff, id, levels) {
             const suffMap = {
                 "tab": "\\9",
                 "space": "\\a0",
             };
             var result = text.replace(/%\d*/g, s => {
                 let lvl = parseInt(s.substring(1), 10) - 1;
-                return `"counter(${this.numberingCounter(id, lvl)}, ${numformat})"`;
+                const format = levels.find(l => l.id == id && l.level == lvl)?.format;
+                if (!format || format == "bullet" || format == "none")
+                    return "";
+                return `"counter(${this.numberingCounter(id, lvl)}, ${this.numFormatToCssValue(format)})"`;
             });
             return `"${result}${suffMap[suff] ?? ""}"`;
         }
@@ -3926,10 +3935,7 @@ section.${c}>footer { z-index: 1; }
             if (!this.options.experimental)
                 return;
             setTimeout(() => {
-                const pixelToPoint = computePixelToPoint();
-                for (let tab of this.currentTabs) {
-                    updateTabStop(tab.span, tab.stops, this.defaultTabSize, pixelToPoint);
-                }
+                updateTabStops(this.currentTabs, this.defaultTabSize, computePixelToPoint());
             }, 500);
         }
         createElementNS(ns, tagName, props, children) {

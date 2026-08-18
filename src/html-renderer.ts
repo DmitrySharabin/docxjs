@@ -11,7 +11,7 @@ import { Options } from './docx-preview';
 import { DocumentElement } from './document/document';
 import { WmlParagraph } from './document/paragraph';
 import { asArray, encloseFontFamily, escapeClassName, isString, keyBy, mergeDeep } from './utils';
-import { computePixelToPoint, updateTabStop } from './javascript';
+import { computePixelToPoint, updateTabStops } from './javascript';
 import { FontTablePart } from './font-table/font-table';
 import { FooterHeaderReference, SectionProperties } from './document/section';
 import { WmlRun } from './document/run';
@@ -640,16 +640,11 @@ section.${c}>footer { z-index: 1; }
 			else if (num.levelText) {
 				let counter = this.numberingCounter(num.id, num.level);
 				const counterReset = counter + " " + (num.start - 1);
-				if (num.level > 0) {
-					styleText += this.styleToString(`p.${this.numberingClass(num.id, num.level - 1)}`, {
-						"counter-set": counterReset
-					});
-				}
 				// reset all level counters with start value
 				resetCounters.push(counterReset);
 
 				styleText += this.styleToString(`${selector}:before`, {
-					"content": this.levelTextToContent(num.levelText, num.suff, num.id, this.numFormatToCssValue(num.format)),
+					"content": this.levelTextToContent(num.levelText, num.suff, num.id, numberings),
 					"counter-increment": counter,
 					...num.rStyle,
 				});
@@ -658,10 +653,17 @@ section.${c}>footer { z-index: 1; }
 				listStyleType = this.numFormatToCssValue(num.format);
 			}
 
+			// Word restarts a level whenever any shallower level advances,
+			// so an item resets every level below it - not just the next one
+			const deeper = numberings
+				.filter(l => l.id == num.id && l.level > num.level && l.levelText)
+				.map(l => `${this.numberingCounter(l.id, l.level)} ${l.start - 1}`);
+
 			styleText += this.styleToString(selector, {
 				"display": "list-item",
 				"list-style-position": "inside",
 				"list-style-type": listStyleType,
+				...(deeper.length ? { "counter-set": deeper.join(" ") } : {}),
 				...num.pStyle
 			});
 		}
@@ -793,7 +795,9 @@ section.${c}>footer { z-index: 1; }
 				return this.renderEndnoteReference(elem as WmlNoteReference);
 
 			case DomType.NoBreakHyphen:
-				return this.h({ tagName: "wbr" });
+				// a non-breaking hyphen is a visible hyphen that forbids a break;
+				// <wbr> is an invisible break opportunity - the opposite on both counts
+				return this.h("\u2011");
 
 			case DomType.VmlPicture:
 				return this.renderVmlPicture(elem);
@@ -910,10 +914,12 @@ section.${c}>footer { z-index: 1; }
 	}
 
 	renderParagraph(elem: WmlParagraph) {
-		var result = this.toHTML(elem, ns.html, "p");
-
 		const style = this.findStyle(elem.styleName);
-		elem.tabs ??= style?.paragraphProps?.tabs;  //TODO
+		// tab stops have to come from the style before the runs are rendered:
+		// renderTab reads them off the paragraph while it renders
+		elem.tabs ??= style?.paragraphProps?.tabs;
+
+		var result = this.toHTML(elem, ns.html, "p");
 
 		const numbering = elem.numbering ?? style?.paragraphProps?.numbering;
 
@@ -1371,7 +1377,7 @@ section.${c}>footer { z-index: 1; }
 		return `${this.className}-num-${id}-${lvl}`;
 	}
 
-	levelTextToContent(text: string, suff: string, id: string, numformat: string) {
+	levelTextToContent(text: string, suff: string, id: string, levels: IDomNumbering[]) {
 		const suffMap = {
 			"tab": "\\9",
 			"space": "\\a0",
@@ -1379,7 +1385,14 @@ section.${c}>footer { z-index: 1; }
 
 		var result = text.replace(/%\d*/g, s => {
 			let lvl = parseInt(s.substring(1), 10) - 1;
-			return `"counter(${this.numberingCounter(id, lvl)}, ${numformat})"`;
+			// %N refers to another level, so it is that level's own format that applies here.
+			// Levels with no number of their own (bullets) contribute nothing, same as in Word.
+			const format = levels.find(l => l.id == id && l.level == lvl)?.format;
+
+			if (!format || format == "bullet" || format == "none")
+				return "";
+
+			return `"counter(${this.numberingCounter(id, lvl)}, ${this.numFormatToCssValue(format)})"`;
 		});
 
 		return `"${result}${suffMap[suff] ?? ""}"`;
@@ -1436,11 +1449,7 @@ section.${c}>footer { z-index: 1; }
 			return;
 
 		setTimeout(() => {
-			const pixelToPoint = computePixelToPoint();
-
-			for (let tab of this.currentTabs) {
-				updateTabStop(tab.span, tab.stops, this.defaultTabSize, pixelToPoint);
-			}
+			updateTabStops(this.currentTabs, this.defaultTabSize, computePixelToPoint());
 		}, 500);
 	}
 
