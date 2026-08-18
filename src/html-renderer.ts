@@ -910,10 +910,12 @@ section.${c}>footer { z-index: 1; }
 	}
 
 	renderParagraph(elem: WmlParagraph) {
-		var result = this.toHTML(elem, ns.html, "p");
-
 		const style = this.findStyle(elem.styleName);
-		elem.tabs ??= style?.paragraphProps?.tabs;  //TODO
+		// tab stops have to come from the style before the runs are rendered:
+		// renderTab reads them off the paragraph while it renders
+		elem.tabs ??= style?.paragraphProps?.tabs;
+
+		var result = this.toHTML(elem, ns.html, "p");
 
 		const numbering = elem.numbering ?? style?.paragraphProps?.numbering;
 
