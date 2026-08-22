@@ -3988,6 +3988,7 @@ async function flowLinkedTextboxes(root) {
     const chained = boxes.filter(b => b.hasAttribute('data-next-shape'));
     if (chained.length == 0)
         return;
+    chained[0].getBoundingClientRect();
     await document.fonts?.ready;
     const byId = new Map(boxes.map(b => [b.getAttribute('data-shape-id'), b]));
     const continuations = new Set(chained.map(b => b.getAttribute('data-next-shape')));
@@ -4007,6 +4008,9 @@ function chainFrom(start, byId) {
 }
 function flowChain(chain) {
     const contents = chain.map(contentOf);
+    for (const content of contents.slice(1)) {
+        content?.replaceChildren();
+    }
     const limits = chain.map(box => box.getBoundingClientRect().height);
     for (let i = 0; i < chain.length - 1; i++) {
         if (contents[i] && contents[i + 1])
@@ -4020,8 +4024,6 @@ function contentOf(box) {
     return box.querySelector('foreignObject');
 }
 function carryOver(from, to, limit) {
-    if (from.scrollHeight <= limit + TOLERANCE)
-        return;
     const point = firstBelow(from, from.getBoundingClientRect().top + limit);
     if (!point)
         return;

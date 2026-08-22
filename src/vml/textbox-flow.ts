@@ -11,7 +11,7 @@
  * the way Word lays it out: fill a box, carry the rest over to the next one.
  */
 
-/** Extra pixels a box may take before its content counts as overflowing. */
+/** Extra pixels a line may reach past a box before it counts as not fitting. */
 const TOLERANCE = 1;
 
 /**
@@ -26,6 +26,11 @@ export async function flowLinkedTextboxes(root: ParentNode): Promise<void> {
 
 	if (chained.length == 0)
 		return;
+
+	// a layout pass has to run first: fonts are only requested once something is
+	// laid out with them, and `fonts.ready` waits for the requested ones alone —
+	// awaited before that, it resolves right away
+	chained[0].getBoundingClientRect();
 
 	// splitting against fallback metrics breaks the text at the wrong word, and the
 	// result looks like a correct render rather than a failed one
@@ -57,6 +62,12 @@ function chainFrom(start: SVGSVGElement, byId: Map<string, SVGSVGElement>): SVGS
 function flowChain(chain: SVGSVGElement[]) {
 	const contents = chain.map(contentOf);
 
+	// only the first box of a chain holds text; anything a continuation carries is
+	// filler the editor left behind, and Word draws none of it
+	for (const content of contents.slice(1)) {
+		content?.replaceChildren();
+	}
+
 	// heights are taken before anything moves: a box keeps the size it was drawn
 	// with, and reading them later would measure boxes the flow has already filled
 	const limits = chain.map(box => box.getBoundingClientRect().height);
@@ -81,9 +92,9 @@ function contentOf(box: SVGSVGElement): SVGForeignObjectElement | null {
 
 /** Moves the part of `from` that does not fit `limit` to the front of `to`. */
 function carryOver(from: SVGForeignObjectElement, to: SVGForeignObjectElement, limit: number) {
-	if (from.scrollHeight <= limit + TOLERANCE)
-		return;
-
+	// whether anything overflows is answered by the same measurement that says where
+	// to cut: box heights and text positions are only comparable in one space, and
+	// under a zoomed sheet `scrollHeight` and `getBoundingClientRect` are not in it
 	const point = firstBelow(from, from.getBoundingClientRect().top + limit);
 
 	if (!point)
