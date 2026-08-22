@@ -2,6 +2,7 @@ import { WordDocument } from './word-document';
 import { DocumentParser } from './document-parser';
 import { HtmlRenderer } from './html-renderer';
 import { h } from './html';
+import { flowLinkedTextboxes } from './vml/textbox-flow';
 
 export interface Options {
     inWrapper: boolean;
@@ -72,6 +73,10 @@ export async function renderAsync(data: Blob | any, bodyContainer: HTMLElement, 
         const c = n.nodeName === "STYLE" ? styleContainer : bodyContainer;
         c.appendChild(n);
     }
-    
+
+    // linked text boxes are laid out over the rendered document: the text can only
+    // be split where it actually breaks into lines
+    await flowLinkedTextboxes(bodyContainer);
+
     return doc;
 }

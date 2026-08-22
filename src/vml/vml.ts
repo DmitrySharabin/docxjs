@@ -10,6 +10,10 @@ export class VmlElement extends OpenXmlElementBase {
 	cssStyleText?: string;
 	attrs: Record<string, string> = {};
 	wrapType?: string;
+	/** Shape identifier, as other shapes reference it (`o:spid`, otherwise `id`). */
+	shapeId?: string;
+	/** Shape the text continues in, when text boxes are linked into a chain. */
+	nextShapeId?: string;
 	imageHref?: {
 		id: string,
 		title: string
@@ -51,6 +55,15 @@ export function parseVmlElement(elem: Element, parser: DocumentParser): VmlEleme
 		switch(at.localName) {
 			case "style": 
 				result.cssStyleText = at.value;
+				result.nextShapeId = parseNextShapeId(at.value);
+				break;
+
+			case "id":
+				result.shapeId ??= at.value;
+				break;
+
+			case "spid":
+				result.shapeId = at.value;
 				break;
 
 			case "fillcolor": 
@@ -99,7 +112,19 @@ export function parseVmlElement(elem: Element, parser: DocumentParser): VmlEleme
 		}
 	}
 
+	// the link lives on `v:textbox`, but it is the shape it names — hoist it so the
+	// chain can be walked shape to shape
+	result.nextShapeId ??= result.children
+		.find((c: any) => c.nextShapeId)?.["nextShapeId"];
+
 	return result;
+}
+
+/** Shape named by `mso-next-textbox`, the VML way of chaining linked text boxes. */
+function parseNextShapeId(style: string): string {
+	const next = parseCssRules(style)["mso-next-textbox"];
+
+	return next?.trim().replace(/^#/, '');
 }
 
 function parseStroke(el: Element): Record<string, string> {

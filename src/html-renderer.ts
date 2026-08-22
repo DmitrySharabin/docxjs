@@ -1204,6 +1204,14 @@ section.${c}>footer { z-index: 1; }
 	renderVmlElement(elem: VmlElement): SVGElement {
 		var container = this.h({ ns: ns.svg, tagName: "svg", style: elem.cssStyleText }) as SVGElement;
 
+		// linked text boxes are chained by shape id; the flow pass walks the chain
+		// through these attributes once the document is laid out
+		if (elem.shapeId)
+			container.setAttribute("data-shape-id", elem.shapeId);
+
+		if (elem.nextShapeId)
+			container.setAttribute("data-next-shape", elem.nextShapeId);
+
 		const result = this.renderVmlChildElement(elem);
 
 		if (elem.imageHref?.id) {

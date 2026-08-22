@@ -97,6 +97,14 @@ function mergeDeep(target, ...sources) {
     }
     return mergeDeep(target, ...sources);
 }
+function parseCssRules(text) {
+    const result = {};
+    for (const rule of text.split(';')) {
+        const [key, val] = rule.split(':');
+        result[key] = val;
+    }
+    return result;
+}
 function asArray(val) {
     return Array.isArray(val) ? val : [val];
 }
@@ -1297,6 +1305,13 @@ function parseVmlElement(elem, parser) {
         switch (at.localName) {
             case "style":
                 result.cssStyleText = at.value;
+                result.nextShapeId = parseNextShapeId(at.value);
+                break;
+            case "id":
+                result.shapeId ?? (result.shapeId = at.value);
+                break;
+            case "spid":
+                result.shapeId = at.value;
                 break;
             case "fillcolor":
                 result.attrs.fill = at.value;
@@ -1336,7 +1351,13 @@ function parseVmlElement(elem, parser) {
                 break;
         }
     }
+    result.nextShapeId ?? (result.nextShapeId = result.children
+        .find((c) => c.nextShapeId)?.["nextShapeId"]);
     return result;
+}
+function parseNextShapeId(style) {
+    const next = parseCssRules(style)["mso-next-textbox"];
+    return next?.trim().replace(/^#/, '');
 }
 function parseStroke(el) {
     return {
@@ -3738,6 +3759,10 @@ section.${c}>footer { z-index: 1; }
     }
     renderVmlElement(elem) {
         var container = this.h({ ns: ns.svg, tagName: "svg", style: elem.cssStyleText });
+        if (elem.shapeId)
+            container.setAttribute("data-shape-id", elem.shapeId);
+        if (elem.nextShapeId)
+            container.setAttribute("data-next-shape", elem.nextShapeId);
         const result = this.renderVmlChildElement(elem);
         if (elem.imageHref?.id) {
             this.tasks.push(this.document?.loadDocumentImage(elem.imageHref.id, this.currentPart)
@@ -3957,6 +3982,102 @@ function findParent(elem, type) {
     return parent;
 }
 
+const TOLERANCE = 1;
+async function flowLinkedTextboxes(root) {
+    const boxes = Array.from(root.querySelectorAll('svg[data-shape-id]'));
+    const chained = boxes.filter(b => b.hasAttribute('data-next-shape'));
+    if (chained.length == 0)
+        return;
+    await document.fonts?.ready;
+    const byId = new Map(boxes.map(b => [b.getAttribute('data-shape-id'), b]));
+    const continuations = new Set(chained.map(b => b.getAttribute('data-next-shape')));
+    const starts = chained.filter(b => !continuations.has(b.getAttribute('data-shape-id')));
+    for (const start of starts) {
+        flowChain(chainFrom(start, byId));
+    }
+}
+function chainFrom(start, byId) {
+    const chain = [];
+    for (let box = start; box; box = byId.get(box.getAttribute('data-next-shape'))) {
+        if (chain.includes(box))
+            break;
+        chain.push(box);
+    }
+    return chain;
+}
+function flowChain(chain) {
+    const contents = chain.map(contentOf);
+    const limits = chain.map(box => box.getBoundingClientRect().height);
+    for (let i = 0; i < chain.length - 1; i++) {
+        if (contents[i] && contents[i + 1])
+            carryOver(contents[i], contents[i + 1], limits[i]);
+    }
+    const last = contents[contents.length - 1];
+    if (last)
+        last.style.overflow = 'visible';
+}
+function contentOf(box) {
+    return box.querySelector('foreignObject');
+}
+function carryOver(from, to, limit) {
+    if (from.scrollHeight <= limit + TOLERANCE)
+        return;
+    const point = firstBelow(from, from.getBoundingClientRect().top + limit);
+    if (!point)
+        return;
+    const range = document.createRange();
+    range.setStart(point.node, point.offset);
+    range.setEnd(from, from.childNodes.length);
+    to.insertBefore(range.extractContents(), to.firstChild);
+    dropEmpty(from.lastElementChild);
+    dropEmpty(to.firstElementChild);
+}
+function firstBelow(container, y) {
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    let length = 0;
+    for (let node; (node = walker.nextNode());) {
+        nodes.push({ node: node, start: length });
+        length += node.nodeValue.length;
+    }
+    if (length == 0)
+        return null;
+    const range = document.createRange();
+    const bottomOf = (index) => {
+        const at = locate(nodes, index);
+        range.setStart(at.node, at.offset);
+        range.setEnd(at.node, at.offset + 1);
+        const box = range.getBoundingClientRect();
+        return box.height == 0 ? null : box.bottom;
+    };
+    let low = 0, high = length - 1, found = null;
+    while (low <= high) {
+        const middle = (low + high) >> 1;
+        const bottom = bottomOf(middle);
+        if (bottom == null || bottom <= y + TOLERANCE) {
+            low = middle + 1;
+        }
+        else {
+            found = middle;
+            high = middle - 1;
+        }
+    }
+    return found == null ? null : locate(nodes, found);
+}
+function locate(nodes, index) {
+    let found = nodes[0];
+    for (const entry of nodes) {
+        if (entry.start > index)
+            break;
+        found = entry;
+    }
+    return { node: found.node, offset: index - found.start };
+}
+function dropEmpty(element) {
+    if (element?.textContent.trim() == '' && !element?.querySelector('img, svg'))
+        element?.remove();
+}
+
 const defaultOptions = {
     ignoreHeight: false,
     ignoreWidth: false,
@@ -3998,6 +4119,7 @@ async function renderAsync(data, bodyContainer, styleContainer, userOptions) {
         const c = n.nodeName === "STYLE" ? styleContainer : bodyContainer;
         c.appendChild(n);
     }
+    await flowLinkedTextboxes(bodyContainer);
     return doc;
 }
 
